@@ -18,7 +18,7 @@ jobs:
       packages: write
       id-token: write
     outputs:
-      image: ${{ env.REGISTRY }}/${{ sig-info.outputs.lowercased_image }}
+      image: ${{ env.REGISTRY }}/${{ steps.prep.outputs.lowercased_image }}
       digest: ${{ steps.build-and-push.outputs.digest }}
 
     steps:
@@ -32,7 +32,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Inject Hardened Lowercase Environment Variables
-        id: sig-info
+        id: prep
         run: |
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_NAME=${REPO_LOWER}" >> $GITHUB_ENV
