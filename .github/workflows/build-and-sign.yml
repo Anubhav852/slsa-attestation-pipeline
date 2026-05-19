@@ -6,19 +6,13 @@ on:
   pull_request:
     branches: [ "main" ]
 
-# Global environment parameters defining explicit target names
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-attest:
     name: Execute Hardened Compilation & Keyless OIDC Signing
     runs-on: ubuntu-latest
-    
-    # Critical Elite Security Step: Explicitly define strict token access permissions.
-    # 'id-token: write' allows exchanging GitHub's OIDC context for short-lived keys with Fulcio.
-    # 'packages: write' allows secure authentication and image publication to GHCR.
     permissions:
       contents: read
       packages: write
@@ -28,14 +22,20 @@ jobs:
       - name: Checkout Source Repository Code Plane
         uses: actions/checkout@v4
 
-      # Installs the official open-source cryptographic signing utility
       - name: Install Sigstore Cosign Ecosystem Binary
         uses: sigstore/cosign-installer@v3.5.0
 
       - name: Set up Docker Buildx Compilation Engine
         uses: docker/setup-buildx-action@v3
 
-      # Federated Authentication: Log into GHCR seamlessly using the automated github.token context
+      # This step explicitly converts your repository path to all lowercase
+      - name: Inject Hardened Lowercase Environment Variables
+        id: prep
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_NAME=${REPO_LOWER}" >> $GITHUB_ENV
+          echo "lowercased_image=${REPO_LOWER}" >> $GITHUB_OUTPUT
+
       - name: Authenticate with GitHub Container Registry (GHCR)
         uses: docker/login-action@v3
         with:
@@ -43,7 +43,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract precise metadata tags based on the Git commit hash to avoid tag collisions
       - name: Extract Dynamic Image Metadata (Tags/Labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -52,7 +51,6 @@ jobs:
           tags: |
             type=sha,format=long,prefix=sha256-
 
-      # Build and push the container using the secure multi-stage specifications from Phase 1
       - name: Build and Publish Hardened Container Image Digest
         id: build-and-push
         uses: docker/build-push-action@v5
@@ -64,11 +62,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Keyless OIDC Signature Injection: Signs the precise cryptographic digest of the pushed image.
-      # Cosign will read the identity token from the context to prove the image was built inside this repository.
       - name: Inject Cryptographic Keyless Identity Attestation
         env:
-          TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
           echo "Initiating Zero-Trust cryptographic identity execution flow..."
