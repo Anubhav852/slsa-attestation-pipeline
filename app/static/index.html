@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLSA hardened pipeline: live console</title>
+<style>
+:root{--bg:#e9edf1;--panel:#fff;--ink:#16222d;--mute:#5b6b7a;--line:#cfd7de;--ok:#0b6b57;--okbg:#dcf3ec;--bad:#a3261b;--badbg:#fbe4e1;--warn:#8a5a00;--warnbg:#fdf0d2;--accent:#1d4e89}
+@media (prefers-color-scheme:dark){:root{--bg:#141b22;--panel:#1d262f;--ink:#e6ecf1;--mute:#97a6b3;--line:#33414d;--ok:#6fd3b6;--okbg:#17352d;--bad:#ff9a8f;--badbg:#3d1d1a;--warn:#f1c66a;--warnbg:#3a2e12;--accent:#8db8f0}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:13px}
+header{padding:22px 24px 10px;max-width:1100px;margin:0 auto}
+h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}
+header p{margin:0;color:var(--mute);max-width:70ch}
+main{max-width:1100px;margin:0 auto;padding:10px 24px 40px;display:grid;gap:16px;grid-template-columns:1fr 1fr}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px}
+section.wide{grid-column:1/-1}
+h2{font-size:16px;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 14px;font-size:14px}
+.pod{font-size:22px;font-weight:600;word-break:break-all}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
+.ok{background:var(--okbg);color:var(--ok)}.bad{background:var(--badbg);color:var(--bad)}.warn{background:var(--warnbg);color:var(--warn)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mute);display:inline-block}
+.dot.up{background:var(--ok)}.dot.down{background:var(--bad)}
+table{width:100%;border-collapse:collapse;margin-top:12px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:600}
+button{font:inherit;font-size:14px;padding:8px 13px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer}
+button:hover{background:var(--accent);color:var(--panel)}
+button.solid{background:var(--accent);color:var(--panel)}
+button.danger{border-color:var(--bad);color:var(--bad)}button.danger:hover{background:var(--bad);color:var(--panel)}
+button:disabled{opacity:.5;cursor:wait}
+button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.res{border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-top:10px}
+.res b{font-size:14px}.res .mono{display:block;color:var(--mute);margin-top:3px;word-break:break-word}
+.log{max-height:230px;overflow:auto;margin-top:12px}
+.log div{padding:4px 0;border-bottom:1px solid var(--line)}
+.empty{color:var(--mute);font-size:14px;margin-top:10px}
+a{color:var(--accent)}
+@media (max-width:780px){main{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Hardened Kubernetes workload: live console</h1>
+  <p>Every result below comes from the running container or from GitHub right now. Nothing is pre-loaded.</p>
+</header>
+<main>
+  <section>
+    <h2>Who answered this request</h2>
+    <p class="sub">Polled every second through the Kubernetes Service.</p>
+    <div class="row"><span id="dot" class="dot"></span><span id="conn" class="pill warn">connecting</span></div>
+    <div id="pod" class="pod mono" style="margin-top:10px">-</div>
+    <div id="meta" class="empty">Waiting for first response.</div>
+    <div id="imgnote" class="empty"></div>
+    <table><thead><tr><th>Pod</th><th>Requests served</th><th>Uptime</th><th>State</th></tr></thead><tbody id="pods"></tbody></table>
+  </section>
+
+  <section>
+    <h2>Attack the running container</h2>
+    <p class="sub">Each button makes this container really try the action and reports what happened.</p>
+    <div class="row">
+      <button class="solid" id="runall">Run all five</button>
+    </div>
+    <div class="row" style="margin-top:10px" id="atkbtns"></div>
+    <div id="results"><div class="empty">No attacks run yet.</div></div>
+  </section>
+
+  <section>
+    <h2>Self-healing</h2>
+    <p class="sub">Cause a failure, then watch the timeline. The page keeps polling while Kubernetes reacts.</p>
+    <div class="row">
+      <button class="danger" id="crash">Crash the pod serving me</button>
+      <button id="copydel">Copy kubectl delete command</button>
+    </div>
+    <div id="copied" class="empty" aria-live="polite"></div>
+    <div id="log" class="log mono"><div class="empty">No events yet.</div></div>
+  </section>
+
+  <section>
+    <h2>Supply chain: latest GitHub Actions runs</h2>
+    <p class="sub">Fetched live from the GitHub API for this repository.</p>
+    <button id="refresh">Refresh from GitHub</button>
+    <div id="runs"><div class="empty">Loading.</div></div>
+  </section>
+</main>
+
+<script>
+const REPO = "Anubhav852/slsa-attestation-pipeline";
+const $ = id => document.getElementById(id);
+const pods = {};            // name -> {served, boot, uptime, seen}
+let current = null, failing = false, failSince = 0;
+
+function el(tag, cls, text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
+function fmt(s){s=Math.round(s);return s<60?s+"s":Math.floor(s/60)+"m "+(s%60)+"s";}
+function note(msg, kind){
+  const log=$("log"); if(log.querySelector(".empty"))log.textContent="";
+  const d=el("div"); d.append(el("span","pill "+(kind||"warn"),new Date().toLocaleTimeString()), document.createTextNode(" "+msg));
+  log.prepend(d);
+}
+
+async function poll(){
+  const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(),2000);
+  try{
+    const r=await fetch("/api/whoami",{cache:"no-store",signal:ctl.signal});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const d=await r.json(); clearTimeout(t);
+    if(failing){note("recovered after "+fmt((Date.now()-failSince)/1000)+", answered by "+d.pod,"ok");failing=false;}
+    const known=pods[d.pod];
+    if(!known) note("pod "+d.pod+" is serving traffic","ok");
+    else if(known.boot!==d.boot) note("pod "+d.pod+" restarted (uptime reset)","warn");
+    pods[d.pod]={served:d.served,boot:d.boot,uptime:d.uptime,seen:Date.now()};
+    current=d.pod; show(d);
+  }catch(e){
+    clearTimeout(t);
+    if(!failing){failing=true;failSince=Date.now();note("request failed: "+(e.name==="AbortError"?"timeout":e.message),"bad");}
+    $("conn").className="pill bad";$("conn").textContent="no response";$("dot").className="dot down";
+  }
+  renderPods();
+}
+
+function show(d){
+  $("conn").className="pill ok";$("conn").textContent="live";$("dot").className="dot up";
+  $("pod").textContent=d.pod;
+  $("meta").textContent="uid "+d.uid+", gid "+d.gid+", pid "+d.pid+", up "+fmt(d.uptime);
+  const digest=/@sha256:[0-9a-f]{64}/.test(d.image);
+  $("imgnote").textContent="Image: "+d.image+(digest?" (pinned by digest)":" (tag only, not digest-pinned)");
+}
+
+function renderPods(){
+  const body=$("pods"); body.textContent="";
+  Object.entries(pods).forEach(([name,p])=>{
+    const stale=Date.now()-p.seen>4000, tr=el("tr");
+    tr.append(el("td","mono",name),el("td",null,String(p.served)),el("td",null,fmt(p.uptime+(Date.now()-p.seen)/1000)));
+    const td=el("td"); td.append(el("span","pill "+(stale?"bad":"ok"),stale?"not responding":"serving")); tr.append(td);
+    body.append(tr);
+  });
+}
+
+const ATK=[["shell","Spawn a shell"],["tools","Find download tools"],["write","Write to filesystem"],["privesc","Escalate to root"],["identity","Inspect privileges"]];
+const resBox=$("results");
+async function attack(name,btn){
+  if(btn)btn.disabled=true;
+  if(resBox.querySelector(".empty"))resBox.textContent="";
+  const box=el("div","res");
+  try{
+    const r=await fetch("/api/attack/"+name,{method:"POST",cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const d=await r.json();
+    const head=el("div","row"); head.append(el("b",null,d.title),el("span","pill "+(d.blocked?"ok":"bad"),d.blocked?"blocked":"NOT blocked"),el("span","mono",d.pod));
+    box.append(head,el("span","mono","tried: "+d.attempt),el("span","mono",d.detail));
+  }catch(e){
+    box.append(el("b",null,"Attack could not run"),el("span","mono",e.message));
+  }
+  resBox.prepend(box);
+  if(btn)btn.disabled=false;
+}
+ATK.forEach(([n,label])=>{const b=el("button",null,label);b.onclick=()=>attack(n,b);$("atkbtns").append(b);});
+$("runall").onclick=async e=>{e.target.disabled=true;for(const [n] of ATK)await attack(n);e.target.disabled=false;};
+
+$("crash").onclick=async e=>{
+  if(!current||!confirm("This exits the container process of "+current+". Kubernetes should restart it. Continue?"))return;
+  e.target.disabled=true;
+  try{
+    const r=await fetch("/api/chaos/crash",{method:"POST"}); const d=await r.json();
+    note("crash sent to "+d.pod+", watching recovery","warn");
+  }catch(err){note("crash request failed: "+err.message,"bad");}
+  setTimeout(()=>{e.target.disabled=false;},3000);
+};
+$("copydel").onclick=async()=>{
+  if(!current){$("copied").textContent="No pod known yet.";return;}
+  const cmd="kubectl delete pod "+current;
+  try{await navigator.clipboard.writeText(cmd);$("copied").textContent="Copied: "+cmd+". Run it in a terminal and watch the timeline.";}
+  catch(e){$("copied").textContent="Clipboard blocked. Run: "+cmd;}
+};
+
+async function loadRuns(){
+  const box=$("runs"); box.textContent="Loading.";
+  try{
+    const r=await fetch("https://api.github.com/repos/"+REPO+"/actions/runs?per_page=5");
+    if(!r.ok) throw new Error(r.status===403?"GitHub rate limit reached, try again later":"GitHub returned HTTP "+r.status);
+    const runs=(await r.json()).workflow_runs||[];
+    box.textContent="";
+    if(!runs.length){box.append(el("div","empty","No workflow runs found for this repository."));return;}
+    const tb=el("table"); const hd=el("thead"); const hr=el("tr");
+    ["Run","Result","Commit","When"].forEach(h=>hr.append(el("th",null,h))); hd.append(hr); tb.append(hd);
+    const bd=el("tbody");
+    runs.forEach(run=>{
+      const tr=el("tr"), a=el("a",null,"#"+run.run_number+" "+run.name); a.href=run.html_url; a.target="_blank"; a.rel="noopener";
+      const c=run.conclusion||run.status, k=c==="success"?"ok":(c==="failure"||c==="cancelled")?"bad":"warn";
+      const t1=el("td"); t1.append(a); const t2=el("td"); t2.append(el("span","pill "+k,c));
+      tr.append(t1,t2,el("td","mono",run.head_sha.slice(0,7)),el("td",null,new Date(run.created_at).toLocaleString()));
+      bd.append(tr);
+    });
+    tb.append(bd); box.append(tb);
+    const jr=await fetch("https://api.github.com/repos/"+REPO+"/actions/runs/"+runs[0].id+"/jobs");
+    if(jr.ok){
+      const jobs=(await jr.json()).jobs||[];
+      box.append(el("p","sub","Jobs in the latest run (signing and provenance):"));
+      jobs.forEach(j=>{const row=el("div","row"); row.style.marginBottom="4px";
+        const c=j.conclusion||j.status; row.append(el("span","pill "+(c==="success"?"ok":c==="failure"?"bad":"warn"),c),el("span",null,j.name)); box.append(row);});
+    }
+  }catch(e){box.textContent="";box.append(el("div","empty","Could not load runs: "+e.message));}
+}
+$("refresh").onclick=loadRuns;
+
+setInterval(poll,1000); poll(); loadRuns();
+</script>
+</body>
+</html>
