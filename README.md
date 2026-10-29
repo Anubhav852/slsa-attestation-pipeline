@@ -152,16 +152,100 @@ Responses send `Connection: close`, so each request opens a new connection and t
 2. Signs the image digest with Sigstore cosign using keyless OIDC identity.
 3. Calls the `slsa-github-generator` container workflow to produce SLSA provenance for the same digest.
 
-To verify the published image yourself, take the digest from the latest successful run or from the package page, then:
+## Verifying the signed image
+
+The image is signed with Sigstore cosign using keyless OIDC identity. No long-lived signing keys exist. The signature is bound to the GitHub Actions workflow identity and recorded in the Rekor public transparency log.
+
+### What you need
+
+- [cosign](https://github.com/sigstore/cosign/releases) v2.x
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "https://github.com/sigstore/cosign/releases/download/v2.2.4/cosign-windows-amd64.exe" -OutFile "cosign.exe"
+```
+
+**Linux / macOS:**
+```bash
+brew install cosign
+# or
+curl -Lo cosign https://github.com/sigstore/cosign/releases/download/v2.2.4/cosign-linux-amd64
+chmod +x cosign && sudo mv cosign /usr/local/bin/
+```
+
+### Step 1 — Find the digest of the image you want to verify
+
+The digest for each build is printed in the GitHub Actions run log under the **Build and Publish Hardened Container Image Digest** step. It looks like:
 
 ```
-cosign verify ghcr.io/anubhav852/slsa-attestation-pipeline@sha256:<DIGEST> \
+sha256:4c91eb802e1439b1ac3bba06fd9c19ac0612ccbdb72446e69e38c9bc04199d0f
+```
+
+You can also retrieve it locally after pulling the image:
+
+**Windows (PowerShell):**
+```powershell
+docker pull ghcr.io/anubhav852/slsa-attestation-pipeline:sha256-80d44bbbac0ccfe51d64c6c63a42cc373d74fa5a
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/anubhav852/slsa-attestation-pipeline:sha256-80d44bbbac0ccfe51d64c6c63a42cc373d74fa5a
+```
+
+**Linux / macOS:**
+```bash
+docker pull ghcr.io/anubhav852/slsa-attestation-pipeline:sha256-80d44bbbac0ccfe51d64c6c63a42cc373d74fa5a
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/anubhav852/slsa-attestation-pipeline:sha256-80d44bbbac0ccfe51d64c6c63a42cc373d74fa5a
+```
+
+### Step 2 — Verify the cosign signature
+
+**Windows (PowerShell):**
+```powershell
+& "cosign.exe" verify `
+  ghcr.io/anubhav852/slsa-attestation-pipeline@sha256:4c91eb802e1439b1ac3bba06fd9c19ac0612ccbdb72446e69e38c9bc04199d0f `
+  --certificate-identity-regexp "^https://github.com/Anubhav852/slsa-attestation-pipeline/" `
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+**Linux / macOS:**
+```bash
+cosign verify \
+  ghcr.io/anubhav852/slsa-attestation-pipeline@sha256:4c91eb802e1439b1ac3bba06fd9c19ac0612ccbdb72446e69e38c9bc04199d0f \
   --certificate-identity-regexp "^https://github.com/Anubhav852/slsa-attestation-pipeline/" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-
-slsa-verifier verify-image ghcr.io/anubhav852/slsa-attestation-pipeline@sha256:<DIGEST> \
-  --source-uri github.com/Anubhav852/slsa-attestation-pipeline
 ```
+
+### Step 3 — What a successful result looks like
+
+```
+Verification for ghcr.io/anubhav852/slsa-attestation-pipeline@sha256:4c91eb802e1439b1ac3bba06fd9c19ac0612ccbdb72446e69e38c9bc04199d0f --
+The following checks were performed on each of these signatures:
+  - The cosign claims were validated
+  - Existence of the claims in the transparency log was verified offline
+  - The code-signing certificate was verified using trusted certificate authority certificates
+
+[{"critical":{"identity":{"docker-reference":"ghcr.io/anubhav852/slsa-attestation-pipeline"},...
+```
+
+### What the certificate confirms
+
+| Field | Value |
+|---|---|
+| Signer | `Anubhav852/slsa-attestation-pipeline/.github/workflows/build-and-sign.yml` |
+| OIDC issuer | `https://token.actions.githubusercontent.com` |
+| Trigger | `push` |
+| Branch | `refs/heads/main` |
+| Commit | `80d44bbbac0ccfe51d64c6c63a42cc373d74fa5a` |
+| Transparency log | Rekor (log index `3557533133`) |
+
+This proves the image was built and signed exclusively by the GitHub Actions workflow using keyless OIDC — no static secrets or long-lived keys were used at any point.
+
+### Verifying a different commit
+
+Each push to `main` produces a new image tagged as `sha256-<full-commit-sha>`. To verify any historical build:
+
+1. Find the full commit SHA: `git log --oneline`
+2. Pull the image: `docker pull ghcr.io/anubhav852/slsa-attestation-pipeline:sha256-<full-commit-sha>`
+3. Get its digest from the pull output (`Digest: sha256:...`)
+4. Run the cosign verify command above with that digest
 
 ## Run it locally
 
