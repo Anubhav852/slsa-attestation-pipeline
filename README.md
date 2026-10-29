@@ -6,10 +6,75 @@ A small Flask service packaged as a shell-less, non-root container, deployed to 
 
 | Link | What it runs | Availability |
 |---|---|---|
-| https://requirements-speaks-tba-walnut.trycloudflare.com | The real 2-replica Kubernetes cluster (kind), exposed through a Cloudflare quick tunnel | Only while the author's laptop and tunnel are running |
-| https://slsa-attestation-pipeline.onrender.com | The same Docker image on Render, as a single instance | Always on, but sleeps after 15 minutes idle; the first request can take 30 to 60 seconds |
+| Cloudflare quick-tunnel URL (shared during live demos) | The real 2-replica Kubernetes cluster (kind) on the author's laptop | Only while the laptop and tunnel are running. The URL changes each time the tunnel restarts |
+| https://slsa-attestation-pipeline.onrender.com | The same source and Dockerfile, built and run by Render as a single instance | Always on, but sleeps after 15 minutes idle; the first request can take 30 to 60 seconds |
 
-The two links run the same image but different runtimes, so the security results differ. That difference is intentional and is explained below.
+Both links serve the same application code, but they are separate builds on different runtimes, so the security results differ. That difference is intentional and is explained below.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    DEV["Developer: git push"] --> REPO["GitHub repo: code, Dockerfile, manifests"]
+
+    subgraph CI["Supply chain: GitHub Actions"]
+        BUILD["Build image"] --> SIGN["Sign with cosign, keyless"]
+        SIGN --> PROV["SLSA provenance generator"]
+    end
+    REPO --> BUILD
+    PROV --> GHCR[("GHCR: signed image and provenance")]
+
+    subgraph RT["Runtime: Kubernetes on laptop"]
+        LOCAL["Local build: slsa-app:local"] --> K8S["kind cluster: 2 hardened pods"]
+        K8S --> SVC["NodePort Service 30080"]
+    end
+    REPO -. "manual docker build and kind load" .-> LOCAL
+    SVC --> TUN["Cloudflare Tunnel"]
+    TUN --> USER["Browser: live console"]
+
+    REPO -- "auto-deploy" --> RENDER["Render: builds Dockerfile, 1 instance"]
+    RENDER --> USER
+    USER -. "reads runs via GitHub API" .-> REPO
+```
+
+### The three paths
+
+| Path | Triggered by | What it builds | Where it ends up |
+|---|---|---|---|
+| Supply chain (GitHub Actions) | Push to `main` | The Dockerfile, in CI | Signed image and SLSA provenance in GHCR |
+| Runtime (kind on a laptop) | Manual `docker build` and `kind load` | The Dockerfile, locally, as `slsa-app:local` | 2 pods under the hardened manifest |
+| Render | Push to `main` (auto-deploy) | The Dockerfile, on Render | 1 instance with Render's own runtime settings |
+
+### Where each protection comes from
+
+| Protection | Defined in | Applies on Render? |
+|---|---|---|
+| Non-root user (UID 10001) | `Dockerfile` | Yes |
+| No shell, `curl` or `wget` | `Dockerfile` | Yes |
+| Read-only root filesystem | `deployment.yaml` | No |
+| All capabilities dropped | `deployment.yaml` | No |
+| `allowPrivilegeEscalation: false` | `deployment.yaml` | Partly (Render's defaults) |
+| Seccomp profile | `deployment.yaml` | No |
+| 2 replicas, probes, self-healing | `deployment.yaml` | No |
+
+A Docker image can only define what is inside it and some startup defaults. Runtime restrictions such as a read-only filesystem, capability drops and seccomp are decided by whoever runs the container. That is why the Kubernetes manifest is a separate layer, and why Render, which runs the image with its own settings, does not show them.
+
+### Build identity
+
+The three paths are separate builds of the same source and Dockerfile. They are equivalent in intent but not guaranteed to be byte-identical, because base images, transitive dependencies and file timestamps can differ between builds. Nothing currently pulls the signed GHCR image into either runtime. See [Known limitations](#known-limitations).
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Application | Python 3.11, Flask 3.0.3, Werkzeug, python-json-logger |
+| Console UI | Plain HTML, CSS and JavaScript, served by Flask |
+| Container | Docker, multi-stage build on `python:3.11-slim`, shells removed, UID 10001 |
+| Orchestration | Kubernetes (kind locally), `kubectl`, Deployment and NodePort Service |
+| CI/CD | GitHub Actions |
+| Supply chain | Sigstore cosign (keyless OIDC signing), `slsa-github-generator` (SLSA provenance), GHCR |
+| Public access | Cloudflare Tunnel (`cloudflared`) and Render |
+| Live data | GitHub REST API (workflow runs and jobs) |
 
 ## How to test it
 
@@ -44,16 +109,9 @@ kubectl logs -l app=secure-api --tail=20
 | Write to filesystem | blocked in `/etc`, `/app` and `/tmp` (read-only file system) | `/etc` denied, `/app` and `/tmp` writable |
 | Pods shown | 2 | 1 |
 
-The shell, download-tool and non-root results come from the **image**. The read-only filesystem, empty capability bounding set and seccomp profile come from the **Kubernetes manifest**, which Render does not apply. If a test ever shows "NOT blocked", that is a genuine finding about the environment, because the tests report what actually happened.
+If a test ever shows "NOT blocked", that is a genuine finding about the environment, because the tests report what actually happened.
 
 ## How it works
-
-```
-git push -> GitHub Actions -> build image -> push to GHCR -> cosign keyless sign
-                                                          -> SLSA container provenance
-Dockerfile -> shell-less non-root image -> Deployment (2 replicas, hardened) -> NodePort Service
-Browser -> console (static page) -> Flask API inside the container
-```
 
 ### Container (`Dockerfile`)
 
@@ -137,7 +195,15 @@ cloudflared tunnel --url http://localhost:30080
 
 ## Known limitations
 
-- The cluster in the demo runs a locally built image (`slsa-app:local`), not the GHCR image that CI signed. The console labels it as tag-only, not digest-pinned. To close the loop, deploy the GHCR image by digest after verifying it with the commands above.
-- The Flask built-in server is used to keep the container write-free for the read-only filesystem demo. A production deployment would use a dedicated WSGI server with an `emptyDir` volume for temporary files.
+- **The signed image is not what runs.** CI signs and attests the image in GHCR, but nothing pulls it. The cluster runs a locally built `slsa-app:local`, and Render builds its own copy. The console labels the cluster image as tag-only, not digest-pinned.
+- **The builds are not provably identical.** The base image tag, transitive Python dependencies and file timestamps can differ between builds.
+- The Flask built-in server keeps the container write-free for the read-only filesystem demo. A production deployment would use a dedicated WSGI server with an `emptyDir` volume for temporary files.
 - The crash endpoint is unauthenticated by design for the demo. Do not expose it on a production service.
 - The Cloudflare quick tunnel has no uptime guarantee, and its URL changes each time it restarts.
+
+## Roadmap
+
+1. Pin the base image by digest and add a dependency lock file for reproducible builds.
+2. Verify the GHCR image with `cosign` and `slsa-verifier`, then deploy it by digest.
+3. Add an admission policy that rejects unsigned images.
+4. Move the manifest to a managed Kubernetes cluster for a permanent public deployment.
